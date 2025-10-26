@@ -36,8 +36,8 @@ pip install biosppy peakutils wfdb scipy scikit-learn pandas matplotlib seaborn 
 Run
 python paper_17_IEEE.py
 
-Contact
-Muhammad Imran
-Email: <your_email@example.com>
+Contact if you have any issues
+Muhammad Imran Khalid
+Email: <imran.khalid292@gmail.com>
 
 
