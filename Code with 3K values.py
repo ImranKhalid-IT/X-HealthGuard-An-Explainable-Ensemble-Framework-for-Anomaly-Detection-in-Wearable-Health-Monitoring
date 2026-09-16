@@ -1,5 +1,4 @@
 
-
 import numpy as np
 import pandas as pd
 import wfdb
@@ -231,13 +230,23 @@ def process_ecg_xhealthguard(records, fs=360):
     return np.array(all_features), np.array(all_labels), np.array(all_groups)
 
 
-def tune_threshold(y_true, y_proba, target_precision=None, target_recall=None):
+def tune_threshold(y_true, y_proba, target_precision=None, objective='f1'):
     """
     Pick an operating threshold from the precision-recall curve.
-    If target_precision is given, picks the lowest threshold that still
-    meets it (maximizing recall). Otherwise picks the threshold that
-    maximizes F1. This is standard, legitimate threshold calibration --
-    it does not alter the model's underlying predictions/scores.
+
+    IMPORTANT: this must be called on a set whose class balance matches
+    the REAL-WORLD / test-set distribution (i.e. NOT the SMOTE-balanced
+    training data). Tuning on balanced data picks a threshold optimized
+    for a 50:50 class ratio, which -- when applied to an imbalanced test
+    set -- causes exactly the symptom of very high Recall but poor
+    Accuracy (too many false positives on the large "normal" class).
+
+    objective:
+      'f1'       -> maximize F1
+      'accuracy' -> maximize Accuracy directly
+    If target_precision is given, it overrides objective and picks the
+    lowest threshold that still meets that precision (maximizing recall
+    subject to that constraint).
     """
     precisions, recalls, thresholds = precision_recall_curve(y_true, y_proba)
     precisions, recalls = precisions[:-1], recalls[:-1]
@@ -248,12 +257,21 @@ def tune_threshold(y_true, y_proba, target_precision=None, target_recall=None):
             idx = np.argmax(recalls[valid])
             return thresholds[valid][idx]
 
+    if objective == 'accuracy':
+        best_thr, best_acc = 0.5, -1
+        for thr in thresholds:
+            preds = (y_proba >= thr).astype(int)
+            acc = accuracy_score(y_true, preds)
+            if acc > best_acc:
+                best_acc, best_thr = acc, thr
+        return best_thr
+
     f1s = 2 * (precisions * recalls) / (precisions + recalls + 1e-8)
     best_idx = np.argmax(f1s)
     return thresholds[best_idx]
 
 
-def run_xhealthguard_experiment(target_precision=None):
+def run_xhealthguard_experiment(target_precision=None, threshold_objective='f1'):
     print("\n--- Running X-HealthGuard (Random Forest) Pipeline ---")
 
     db_dir = 'mitdb_data'
@@ -278,22 +296,42 @@ def run_xhealthguard_experiment(target_precision=None):
     print(f"Extracted {X.shape[0]} segments, {X.shape[1]}-D features. "
           f"Positive class ratio: {np.mean(y):.3f}")
 
-    # 2. Record-Level Partitioning (80:20)
-    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-    train_idx, test_idx = next(gss.split(X, y, groups))
-    X_train, X_test = X[train_idx], X[test_idx]
-    y_train, y_test = y[train_idx], y[test_idx]
+    # 2. Record-Level Partitioning: Train+Val (80%) / Test (20%)
+    gss_outer = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+    trainval_idx, test_idx = next(gss_outer.split(X, y, groups))
+    X_trainval, X_test = X[trainval_idx], X[test_idx]
+    y_trainval, y_test = y[trainval_idx], y[test_idx]
+    groups_trainval = groups[trainval_idx]
 
-    # 3. Scale features (fit on train only)
+    # 2b. Further split Train+Val into a SMOTE-training subset and a
+    #     clean, NATURALLY-IMBALANCED validation subset (record-level,
+    #     no leakage). This validation subset mirrors the real-world
+    #     class distribution -- same as the test set -- so tuning on it
+    #     (instead of on SMOTE-balanced data) gives a threshold that
+    #     generalizes correctly and fixes the high-Recall/low-Accuracy
+    #     mismatch.
+    gss_inner = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=7)
+    sub_train_idx, val_idx = next(gss_inner.split(X_trainval, y_trainval, groups_trainval))
+    X_sub_train, X_val = X_trainval[sub_train_idx], X_trainval[val_idx]
+    y_sub_train, y_val = y_trainval[sub_train_idx], y_trainval[val_idx]
+    print(f"Sub-train segments: {len(X_sub_train)} (pos ratio {np.mean(y_sub_train):.3f}) | "
+          f"Validation segments: {len(X_val)} (pos ratio {np.mean(y_val):.3f}, "
+          f"naturally imbalanced -- matches test distribution)")
+
+    # 3. Scale features (fit on Train+Val only, applied everywhere)
     scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
+    X_trainval_scaled = scaler.fit_transform(X_trainval)
+    X_sub_train = scaler.transform(X_sub_train)
+    X_val = scaler.transform(X_val)
     X_test = scaler.transform(X_test)
 
-    # 4. SMOTE on Active Training Fold ONLY
+    # 4. SMOTE -- fit ONLY on the sub-train fold (val and test stay
+    #    untouched and imbalanced, exactly as real data would be)
     smote = SMOTE(random_state=42)
-    X_train_bal, y_train_bal = smote.fit_resample(X_train, y_train)
+    X_sub_train_bal, y_sub_train_bal = smote.fit_resample(X_sub_train, y_sub_train)
 
-    # 5. Hyperparameter tuning via RandomizedSearchCV
+    # 5. Hyperparameter tuning via RandomizedSearchCV on the balanced
+    #    sub-train fold
     param_dist = {
         'n_estimators': [200, 300, 400, 500, 600],
         'max_depth': [10, 15, 20, 30, None],
@@ -308,16 +346,27 @@ def run_xhealthguard_experiment(target_precision=None):
         scoring='f1', cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=42),
         random_state=42, n_jobs=-1, verbose=0
     )
-    search.fit(X_train_bal, y_train_bal)
-    rf = search.best_estimator_
-    print(f"Best RF params: {search.best_params_}")
+    search.fit(X_sub_train_bal, y_sub_train_bal)
+    best_params = search.best_params_
+    print(f"Best RF params: {best_params}")
 
-    # 6. Threshold tuning (on training fold predictions, NOT test)
-    train_proba = rf.predict_proba(X_train_bal)[:, 1]
-    threshold = tune_threshold(y_train_bal, train_proba, target_precision=target_precision)
-    print(f"Selected decision threshold: {threshold:.3f}")
+    # 6. Threshold tuning on the CLEAN, naturally-imbalanced validation
+    #    set (not on SMOTE-balanced data) -- this is the key fix.
+    probe_rf = RandomForestClassifier(random_state=42, n_jobs=-1, **best_params)
+    probe_rf.fit(X_sub_train_bal, y_sub_train_bal)
+    val_proba = probe_rf.predict_proba(X_val)[:, 1]
+    threshold = tune_threshold(y_val, val_proba, target_precision=target_precision,
+                                objective=threshold_objective)
+    print(f"Selected decision threshold (tuned on realistic-imbalance validation set): {threshold:.3f}")
 
-    # 7. Evaluation on held-out test set
+    # 7. Refit final model on ALL available training data (sub-train +
+    #    val, SMOTE-balanced) so no data is wasted, then apply the
+    #    tuned threshold to the untouched test set.
+    X_trainval_bal, y_trainval_bal = smote.fit_resample(X_trainval_scaled, y_trainval)
+    rf = RandomForestClassifier(random_state=42, n_jobs=-1, **best_params)
+    rf.fit(X_trainval_bal, y_trainval_bal)
+
+    # 8. Evaluation on held-out test set
     y_proba_test = rf.predict_proba(X_test)[:, 1]
     y_pred = (y_proba_test >= threshold).astype(int)
 
@@ -352,7 +401,13 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Download warning (can be ignored if files already exist): {e}")
 
-    # target_precision=None -> threshold chosen to maximize F1.
-    # Set e.g. target_precision=0.73 if you want to explicitly favor a
-    # precision floor and let recall/F1 adjust accordingly.
-    run_xhealthguard_experiment(target_precision=None)
+    # threshold_objective='f1'       -> best balance of precision/recall
+    # threshold_objective='accuracy' -> directly maximizes accuracy
+    # target_precision=0.XX          -> overrides objective; guarantees
+    #                                    a minimum precision floor
+    #
+    # Threshold is now tuned on a clean, naturally-imbalanced validation
+    # split (not on SMOTE-balanced data), so it should generalize to the
+    # test set correctly instead of over-favoring Recall at Accuracy's
+    # expense.
+    run_xhealthguard_experiment(target_precision=None, threshold_objective='f1')
