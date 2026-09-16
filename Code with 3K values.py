@@ -1,4 +1,5 @@
 
+
 import numpy as np
 import pandas as pd
 import wfdb
@@ -401,13 +402,12 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Download warning (can be ignored if files already exist): {e}")
 
-    # threshold_objective='f1'       -> best balance of precision/recall
-    # threshold_objective='accuracy' -> directly maximizes accuracy
-    # target_precision=0.XX          -> overrides objective; guarantees
-    #                                    a minimum precision floor
-    #
-    # Threshold is now tuned on a clean, naturally-imbalanced validation
-    # split (not on SMOTE-balanced data), so it should generalize to the
-    # test set correctly instead of over-favoring Recall at Accuracy's
-    # expense.
-    run_xhealthguard_experiment(target_precision=None, threshold_objective='f1')
+    # threshold_objective='accuracy' chosen as default: your run showed
+    # that with this dataset the "anomaly" class is actually the
+    # MAJORITY class (~64% positive), not a rare minority. In that
+    # situation an F1-maximizing threshold tends to collapse toward
+    # predicting almost everything positive (high Recall, poor
+    # Accuracy), because F1 doesn't reward true negatives at all.
+    # Directly optimizing the threshold for Accuracy on the clean,
+    # naturally-imbalanced validation split fixes this.
+    run_xhealthguard_experiment(target_precision=None, threshold_objective='accuracy')
