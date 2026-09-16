@@ -1,39 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-Updated paper_17_ieee.py
-Aligned with X-HealthGuard Methodology (Version 1.0)
 
-CHANGES vs original version (all genuine algorithmic/methodological
-improvements -- no hardcoded/fabricated metrics):
-
-  1. Real SampEn (Sample Entropy) and DFA alpha1 (Detrended Fluctuation
-     Analysis) computed in pure NumPy, replacing the old hardcoded
-     placeholders (1.5 / 1.0). Those placeholders made ~1/8 of every
-     256-D feature vector constant and useless for the classifier.
-  2. Fixed a labeling bug: non-beat annotation symbols in MIT-BIH
-     ('+', '~', '|', '"', 'x', etc.) were being counted as "anomaly"
-     even though they are not abnormal heartbeats. This was injecting
-     label noise that directly hurt precision.
-  3. Uses the FULL 48-record MIT-BIH Arrhythmia Database by default
-     instead of a 7-record subset -- small subsets give unstable,
-     unreliable F1/precision/recall estimates.
-  4. Added StandardScaler (fit on train fold only, applied to test).
-  5. Added RandomizedSearchCV hyperparameter search for the Random
-     Forest instead of fixed guessed hyperparameters.
-  6. Added probability-threshold tuning on the training fold using the
-     precision-recall curve (a standard, legitimate technique) so the
-     operating point can be chosen for a target precision/recall
-     balance instead of the default 0.5 cutoff.
-  7. SMOTE is still fit on the ACTIVE TRAINING FOLD ONLY (no leakage
-     into test set), and splitting is still done at the record
-     (patient) level via GroupShuffleSplit.
-
-NOTE: This script does not, and cannot, guarantee an exact
-Precision/Recall/F1/Accuracy number -- that depends on your actual
-data. What it does is remove sources of noise/leakage/placeholder
-features that were suppressing performance, and add proper tuning, so
-the numbers you get are the genuine best the pipeline can produce.
-"""
 
 import numpy as np
 import pandas as pd
