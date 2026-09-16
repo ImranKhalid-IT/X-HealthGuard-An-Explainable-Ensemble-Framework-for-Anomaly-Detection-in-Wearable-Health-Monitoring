@@ -1,5 +1,3 @@
-Here is a detailed, fully translated, and expanded explanation of your X-HealthGuard documentation. I have elaborated on the scientific reasoning behind each step to give you a more comprehensive understanding of the pipeline.
-
 # X-HealthGuard: ECG Anomaly Detection Pipeline
 
 This script automates the extraction of Heart Rate Variability (HRV) features from the MIT-BIH Arrhythmia Database to train a Random Forest machine-learning classifier. Its primary objective is to accurately distinguish between normal and abnormal (anomalous) heartbeats while adhering to best practices in medical machine learning.
